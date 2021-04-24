@@ -1,38 +1,37 @@
-# Best Practices in writing Go RESTful API client
-
-Here is a collection of best practices and example fo client library. I put this together while preparing for the interviews. It is easy to forget about some key patterns, which indicates the quality of Golang engineer
+# How to write Go RESTful API client
+Here is a collection of best practices and an example of client library. I put this together while preparing for the interviews. It is easy to forget about some key patterns, which indicates the quality of Golang engineer
 
 
 ## Overall structure of API client
 
 Client structure contains reusable components like http.Client and configuration. Api endpoints are packaged into Service structure, which is a member of a Client.
 
-Service consists of interface with endpoint functions and Service structure which implements this interface. 
+Service consists of an interface with endpoint functions and Service structure which implements this interface.
 
-Request are process the following way. There is a client level function to create request, which is passed to http.Client. This top level request generator takes care of common headers like authentication, Accept header, User-agent header, etc. It is also responsible for adding baseURL to endpoint path. 
+Requests are processed the following way. There is a client level function to create a request, which is passed to http.Client. This top level request generator takes care of common headers like authentication, Accept header, User-agent header, etc. It is also responsible for adding baseURL to the endpoint path.
 
-Request is executed by Do function, which is at the Client level. It takes Request and interface for marshalled response body. 
-Before it calls http.Clinet Do function, it checks rate limits from previous response. If limits are binding, it return fake response with 429 status error. Rate limiter values are stored in a Client structure and accessed with mutex lock. Response values from http.Client.Do goes through the following process:
+Request is executed by Do function, which is at the Client level. It takes Request and interface for marshalled response body.
+Before it calls http.Client Do function, it checks rate limits from the previous response. If limits are binding, it returns a fake response with 429 status error. Rate limiter values are stored in a Client structure and accessed with mutex lock. Response values from http.Client. Do goes through the following process:
 - create new response with extra stuff (rate limits, headers, etc)
 - save rate in client
 - check for errors
 - if there is no error, decode body to provided output interface
 
 
-Inital response processing is taken care of at Client level. http.Response is wrapped by your own Response structure. You can keep there extra stuff like paginating variables (offset, limit, etc) and limiter rates in the response (parsed http headers  RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset). 
-NewResponse function takes http.Client response as argument, parses response headers and populate this extra stuff in the response wrapper structure.
+### Response processing
+Initial response processing is taken care of at Client level. http.Response is wrapped by your own Response structure. You can keep there extra stuff like paginating variables (offset, limit, etc) and limiter rates in the response (parsed http headers  RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset).
+NewResponse function takes http.Client response as argument, parses response headers and populates this extra stuff in the response wrapper structure.
 
-Error check
-First define ErrorResponse structure (make sure to define Error() to satisfy Go error interface), which contains reference to http.Response. Then you can create Errors for some others http errors, which you want to treat differently in your application, e.g. rate limits (e.g. RateLimitError), forbidden (AuthError), etc
+If there are some specific http errors which you want to cover in your application, e.g. rate limits (RateLimitError) or forbidden (AuthError), define such errors explicitly; for all other errors define a generic error, i.e. ErrorResponse structure (make sure to define Error() to satisfy Go error interface). For your convenience make sure to include reference to http.Response in your error definition. Http errors are covered the following way:
 
 - Http status >= 200 and < 299 generate no error
-- 202 Accepted Response is treated separetely; 202 is when request was accepted but not yet processed. AcceptedError is to treat is separetely from other successful calls
+- 202 Accepted Response is treated separately; 202 is when request was accepted but not yet processed. If your application acts on 202, define AcceptedError and return it on a successful 202 call.
 - if http status >=300, then
-	- read and unmarshal response body if read body != nil, in case API has message in the response
-	- filter through status codes for which you want to generate custom Error
-	- for any other error, generate default ResponseError which refers to http.Request
+   - read and unmarshal response body if read body != nil, in case API has message in the response
+   - filter through status codes for which you want to generate custom Error
+   - for any other error, generate default ResponseError which refers to http.Request
 
-
+You don't want to flood the server with requests when the rate limiter is triggered; instead back off with request by returning custom 429 error, e.g. RateLimitError. Well built API server should include rate limits in the response headers: ratelimit-limit, ratelimit-Remaining, ratelimit-reset or x-rate-*. These headers are processed, extracted from the response and saved in the Client; make sure to use mutex lock on r/w for these variables. Then on every request check whether limits are not binding and only then send the request.
 
 
 
@@ -200,8 +199,13 @@ func CheckResponse(r *http.Response) error {
 	return errorResponse
 }
 
-```
+```  
 
+## Logic for custom errors
+```go
+
+
+```
 
 
 ## create a new file for each service interface, e.g. tag.go
@@ -279,16 +283,20 @@ func (s *TagsService) Get(ctx context.Context, name string) (*Tag, *Response, er
 	return root.Tag, resp, err
 }
 ```
+
+
 - create test file, tags_test.go
 
 
 
 
+## Pagination
 
-- use context in every endpoint function
 
 
-## rate limiter
+
+
+## Rate limiter
  
 
 
@@ -297,10 +305,10 @@ func (s *TagsService) Get(ctx context.Context, name string) (*Tag, *Response, er
 
 When asked to integrate with API
 - Read documentation of the endpoint; talk about division between services; possible errors;
-- Start building it step by step using tests for 
+- Start building it step by step using tests along the way. Make sure every step is working and build on top of it
 - Create a new project and a folder for your restful api client
 - Create main file and start with tests
-- Clinet/Service, Service Interface and implementation
+- Client/Service pattern, Service Interface and implementation
 - Context in every service method to cancel any calls
 - options object pagination 
 - Request generator which populates headers related to authentication, accepted content, etc; as well as contruct parameters in the path based on passed options
