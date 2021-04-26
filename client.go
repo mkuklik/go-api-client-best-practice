@@ -135,3 +135,9 @@ func (c *Client) NewRequest(ctx context.Context, method, urlStr string, body int
 
 	return req, nil
 }
+
+type Pagination struct {
+	Page    int `json:"page"`
+	PerPage int `json:"per_page"`
+	Total   int `json:"total"`
+}

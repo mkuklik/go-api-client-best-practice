@@ -33,9 +33,6 @@ If there are some specific http errors which you want to cover in your applicati
 
 You don't want to flood the server with requests when the rate limiter is triggered; instead back off with request by returning a custom error, e.g. RateLimitError. Well-built API server should include rate limits in the response headers: ratelimit-limit, ratelimit-Remaining, ratelimit-reset or x-rate-*. These headers are processed, extracted from the response and saved in the Client; make sure to use mutex lock on r/w for these variables. Then on every request check whether limits are not binding and only then send the request. Also note that other errors like 403 Forbidden can be returned when reaching the limit. Thus
 
-TODO:
-- sanitizeURL
-
 # Details
 - start with creating module
 ```bash
@@ -251,7 +248,7 @@ type RateLimitError struct {
 
 func (r *RateLimitError) Error() string {
 	return fmt.Sprintf("%v %v: %d %v %v",
-		r.Response.Request.Method, sanitizeURL(r.Response.Request.URL),
+		r.Response.Request.Method, r.Response.Request.URL,
 		r.Response.StatusCode, r.Message, formatRateReset(time.Until(r.Rate.Reset.Time)))
 }
 
@@ -299,7 +296,8 @@ if !ok {
 
 Define structures, which JSON in a response body is unmarshalled into. Make sure to include tags for json, xml, etc
 
-```go tag.go
+**`tag.go`**
+```go
 type ResourceType string
 
 const (
@@ -323,7 +321,8 @@ Define service interface
 * if there are any options include them as arguments
 * return marshell output and 
 
-```go tag.go
+**`tag.go`**
+```go
 
 type TagsService interface {
 	List(context.Context, *ListOptions) ([]Tag, *Response, error)
@@ -334,6 +333,7 @@ type TagsService interface {
 ```
 
 Create a structure, which implements the service interface. Pointer to http.Client is passed into it.
+**`tag.go`**
 ```go
 type TagsServiceOp {
 	client *Client
@@ -341,11 +341,12 @@ type TagsServiceOp {
 ```
 
 Implement interface functions. It should create request with `NewRequest` and modify it accordingly. Then allocate empty value for response data and call Do to send a request.
-```go
 
+**`tag.go`**
+```go
 const tagsBasePath = "v2/tags"
 
-func (s *TagsService) Get(ctx context.Context, name string) (*Tag, *Response, error) {
+func (s *TagsServiceOp) Get(ctx context.Context, name string) (*Tag, *Response, error) {
 	path := fmt.Sprintf("%s/%s", tagsBasePath, name)
 
 	req, err := s.client.NewRequest(ctx, http.MethodGet, path, nil)
@@ -364,6 +365,139 @@ func (s *TagsService) Get(ctx context.Context, name string) (*Tag, *Response, er
 ```
 
 ## Testing
+
+### Setting up server
+
+To test the client we have to setup http server. When testing specific endpoint we 
+
+
+**`client_test.go`**
+```go
+func setup() (client *Client, mux *http.ServeMux, serverURL string, teardown func()) {
+	// mux is the HTTP request multiplexer used with the test server.
+	mux = http.NewServeMux()
+
+	// server is a test HTTP server used to provide mock API responses.
+	server := httptest.NewServer(apiHandler)
+
+	// client is the client being tested and is
+	// configured to use test server.
+	client = NewClient(nil)
+	url, _ := url.Parse(server.URL + baseURLPath + "/")
+	client.BaseURL = url
+
+	return client, mux, server.URL, server.Close
+}
+```
+
+Testing endpoint function has to following pattern:
+- setup server and client
+- add endpoint handle with the wanted response to the server
+- call the endpoint using the client
+- check whether what you've got is what you wanted
+
+```go
+
+func TestTagServiceGet(t *testing.T) {
+	client, mux, _, teardown := setup()
+	defer teardown()
+
+	tagName := "abc"
+	mux.HandleFunc(fmt.Sprintf("/tag/%s", tagName), func(w http.ResponseWriter, r *http.Request) {
+		testMethod(t, r, "GET")
+		fmt.Fprintf(w, `{
+		  "sha": "s",
+		  "commit": { "message": "m" },
+		  "author": { "login": "l" },
+		  "committer": { "login": "l" },
+		  "parents": [ { "sha": "s" } ],
+		  "stats": { "additions": 104, "deletions": 4, "total": 108 },
+		  "files": [
+		    {
+		      "filename": "f",
+		      "additions": 10,
+		      "deletions": 2,
+		      "changes": 12,
+		      "status": "s",
+		      "patch": "p",
+		      "blob_url": "b",
+		      "raw_url": "r",
+		      "contents_url": "c"
+		    }
+		  ]
+		}`)
+	})
+
+	ctx := context.Background()
+	commit, _, err := client.Tag.Get(ctx, tagName)
+	if err != nil {
+		t.Errorf("Tag.Get returned error: %v", err)
+	}
+
+	want := &RepositoryCommit{
+		SHA: String("s"),
+		Commit: &Commit{
+			Message: String("m"),
+		},
+		Author: &User{
+			Login: String("l"),
+		},
+		Committer: &User{
+			Login: String("l"),
+		},
+		Parents: []*Commit{
+			{
+				SHA: String("s"),
+			},
+		},
+		Stats: &CommitStats{
+			Additions: Int(104),
+			Deletions: Int(4),
+			Total:     Int(108),
+		},
+		Files: []*CommitFile{
+			{
+				Filename:    String("f"),
+				Additions:   Int(10),
+				Deletions:   Int(2),
+				Changes:     Int(12),
+				Status:      String("s"),
+				Patch:       String("p"),
+				BlobURL:     String("b"),
+				RawURL:      String("r"),
+				ContentsURL: String("c"),
+			},
+		},
+	}
+	if !reflect.DeepEqual(commit, want) {
+		t.Errorf("Repositories.GetCommit returned \n%+v, want \n%+v", commit, want)
+	}
+}
+
+```
+
+
+
+
+```go
+func TestRateLimits(t *testing.T) {
+	client, mux, _, teardown := setup()
+	defer teardown()
+
+	mux.HandleFunc("/rate_limit", func(w http.ResponseWriter, r *http.Request) {
+		testMethod(t, r, "GET")
+		fmt.Fprint(w, `{"resources":{
+			"core": {"limit":2,"remaining":1,"reset":1372700873},
+			"search": {"limit":3,"remaining":2,"reset":1372700874}
+		}}`)
+	})
+
+
+
+}
+```
+
+
 - create test file, tags_test.go
 ```go
 
@@ -374,12 +508,86 @@ func (s *TagsService) Get(ctx context.Context, name string) (*Tag, *Response, er
 
 
 ## Pagination
-TODO
 
+First we create a structure with options used to call endpoint function. For pagination it is either Page/perPage or Offset/Limit; we will use the former. Since this option is used across the services we can place it in the Client file. Structure tag 'url' defines is used by go-querystring library to encode structure into url query values.
 
+**`client.go`**
+```go
+type ListOptions struct {
+	// For paginated result sets, page of results to retrieve.
+	Page int `url:"page,omitempty"`
+
+	// For paginated result sets, the number of results to include per page.
+	PerPage int `url:"per_page,omitempty"`
+}
+```
+
+Options are passed to the endpoint calls as a pointer. Then they are added by addOptions function, which is using reflection to populate parameters in the URL; therefore addOptions is client wide.
+
+**`tag.go`**
+```go 
+func (s *TagsServiceOp) List(ctx context.Context, opt *ListOptions) ([]Tag, *Response, error) {
+	path := tagsBasePath
+	path, err := addOptions(path, opt)
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	req, err := s.client.NewRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	root := new(tagsRoot)
+	resp, err := s.client.Do(ctx, req, root)
+	if err != nil {
+		return nil, resp, err
+	}
+	if l := root.Links; l != nil {
+		resp.Links = l
+	}
+	if m := root.Meta; m != nil {
+		resp.Meta = m
+	}
+
+	return root.Tags, resp, err
+}
+```
+
+We will use a Go library, 'go-querystring', that encodes structs into URL query parameters.
+
+**`client.go`**
+```go
+import "github.com/google/go-querystring/query"
+
+func addOptions(s string, opts interface{}) (string, error) {
+	v := reflect.ValueOf(opts)
+	if v.Kind() == reflect.Ptr && v.IsNil() {
+		return s, nil
+	}
+
+	u, err := url.Parse(s)
+	if err != nil {
+		return s, err
+	}
+
+	qs, err := query.Values(opts)
+	if err != nil {
+		return s, err
+	}
+
+	u.RawQuery = qs.Encode()
+	return u.String(), nil
+}
+```
+
+TODO: include pagination in response object
 
 ## Rate limiter
-Create a structure with rates limits, which is stored in the Client. Rate will be populated from every responce. Since client can process many requests at the same time, we need a lock whenever we read/write to `Rate`
+Create a structure with rates limits, which is stored in the Client. Rate will be populated from every responce. Since client can process many requests at the same time, we need a lock whenever we read/write to `Rate`.
+
+**`client.go`**
 ```go
 type Client struct {
 	// ...
@@ -393,8 +601,8 @@ type Client struct {
 
 In out response we will add rate and parse it when creating a new `Response` from http.Response. Note that header names listed below can be found in RAte Limiter RFC Draft. Some APIs use X-Rate-Limit-Limit, X-Rate-Limit-Remaining,  X-Rate-Limit-Reset.
 
+**`client.go`**
 ```go
-
 const (
 	headerRateLimit     = "RateLimit-Limit"
 	headerRateRemaining = "RateLimit-Remaining"
@@ -427,6 +635,7 @@ func parseRate(r *Response) {
 
 Now `Rate` in the Client is populated when running Do
 
+**`client.go`**
 ```go
 
 func (c *Client) Do(ctx context.Context, req *http.Request, v interface{}) (*Response, error) {
@@ -462,6 +671,7 @@ func (c *Client) Do(ctx context.Context, req *http.Request, v interface{}) (*Res
 
 Finally, we need to check whether rate limits are binding and return error.
 
+**`client.go`**
 ```go
 // RateLimitError occurs when GitHub returns 403 Forbidden response with a rate limit
 // remaining value of 0.
@@ -473,7 +683,7 @@ type RateLimitError struct {
 
 func (r *RateLimitError) Error() string {
 	return fmt.Sprintf("%v %v: %d %v %v",
-		r.Response.Request.Method, sanitizeURL(r.Response.Request.URL),
+		r.Response.Request.Method, r.Response.Request.URL,
 		r.Response.StatusCode, r.Message, formatRateReset(time.Until(r.Rate.Reset.Time)))
 }
 
@@ -502,10 +712,6 @@ func (c *Client) checkRateLimitBeforeDo(req *http.Request) *RateLimitError {
 	return nil
 }
 ```
-
-## Test everything 
-TODO what to test
-
 
 
 # !!! Things to remember !!!

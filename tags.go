@@ -2,7 +2,12 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+)
+
+const (
+	tagsBasePath = "v2/tags"
 )
 
 /*  Objects */
@@ -23,6 +28,11 @@ type Resource struct {
 type Tag struct {
 	Name      string      `json:"name,omitempty"`
 	Resources []*Resource `json:"resources,omitempty"`
+}
+
+type TagsReply struct {
+	Pagination *Pagination `json:"pagination"`
+	Tags       []Tag       `json:"data"`
 }
 
 /* SERVICE */
@@ -74,8 +84,22 @@ func (s *TagsServiceOp) List(ctx context.Context, opt *ListOptions) ([]Tag, *Res
 }
 
 // Get a single tag
+
 func (s *TagsServiceOp) Get(ctx context.Context, name string) (*Tag, *Response, error) {
-	return nil, nil, nil
+	path := fmt.Sprintf("%s/%s", tagsBasePath, name)
+
+	req, err := s.client.NewRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	root := new(tagRoot)
+	resp, err := s.client.Do(ctx, req, root)
+	if err != nil {
+		return nil, resp, err
+	}
+
+	return root.Tag, resp, err
 }
 
 // Create a new tag
